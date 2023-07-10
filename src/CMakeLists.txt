@@ -5,6 +5,7 @@ target_link_libraries(
   PUBLIC project_options project_warnings
 
   Boost::headers
+  Boost::program_options
   Microsoft.GSL::GSL
   OpenSSL::SSL
 #  PRIVATE CLI11::CLI11 fmt::fmt spdlog::spdlog
