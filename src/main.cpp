@@ -572,44 +572,49 @@ int main(int argc, char* argv[])
         tcp::socket socket{ioc};
 
         ssl::context ctx(ssl::context::tlsv12_client);
+        ssl::stream<tcp::socket&> stream(socket, ctx);
 
         if(variables_map.count("proxy") != 0U) {
             auto proxy = variables_map["proxy"].as<std::string>();
             auto pport = variables_map["proxyport"].as<unsigned short>();
 
             socket.connect({boost::asio::ip::address_v4::from_string(proxy), pport});
-        }
 
-        ssl::stream<tcp::socket&> stream(socket, ctx);
+            std::string const targetHost{dnsdomain+":"+std::to_string(dnsport)};
 
-        auto dnsEndpoint = boost::asio::ip::tcp::endpoint{boost::asio::ip::address::from_string(dnsip), dnsport};
+            boost::beast::http::request<boost::beast::http::empty_body> reqProxy{
+              boost::beast::http::verb::connect, targetHost, VERSION};
+            reqProxy.set(boost::beast::http::field::host, targetHost);
 
-        if(variables_map.count("proxy") != 0U) {
             if(variables_map.count("proxyuser")) {
-                //auto user = variables_map["proxyuser"].as<std::string>();
-                //auto psswd = variables_map["proxypasswd"].as<std::string>();
+                auto user = variables_map["proxyuser"].as<std::string>();
+                auto psswd = variables_map["proxypasswd"].as<std::string>();
 
-                throw std::system_error(ENOTSUP, std::generic_category(), "Proxy authentification not supported yet");
-                // TODO authentification
+                auto credentials = user + ":" + psswd;
+
+                using namespace boost::archive::iterators;
+                using It = base64_from_binary<transform_width<std::string::const_iterator, 6, 8>>;
+                auto credentialsBase64 = std::string(It(std::begin(credentials)), It(std::end(credentials)));
+                credentialsBase64.append((3 - credentials.size() % 3) % 3, '=');
+
+                reqProxy.set(boost::beast::http::field::proxy_authorization, "Basic " + credentialsBase64);
             }
 
+            reqProxy.set(boost::beast::http::field::user_agent, "Boost Beast DoH Client");
+            reqProxy.set(boost::beast::http::field::proxy_connection, "Keep-Alive");
+            boost::beast::http::write(socket, reqProxy);
 
-            http::request<http::string_body> reqProxy{http::verb::connect, uri, VERSION};
-            reqProxy.set(http::field::host, dnsdomain);
-            reqProxy.set(http::field::user_agent, "Boost Beast DoH Client");
-            reqProxy.set(http::field::content_type, "application/dns-message");
+            boost::beast::flat_buffer                                         buffer;
+            boost::beast::http::response<boost::beast::http::empty_body>      proxyResponse;
+            boost::beast::http::parser<false, boost::beast::http::empty_body> responseParser{proxyResponse};
+            responseParser.skip(true);
+            boost::beast::http::read(socket, buffer, responseParser);
 
-            http::write(socket, reqProxy);
-
-            http::response<http::empty_body> resProxy;
-            http::parser<false, http::empty_body> http_parser(resProxy);
-            http_parser.skip(true);
-
-            boost::beast::flat_buffer buffer;
-            http::read(socket, buffer, http_parser);
-
-            std::cout << "Target DNS server response: " << resProxy << std::endl;
+            std::stringstream ss2;
+            ss2 << proxyResponse;
+            std::cout << "Proxy Server HTTP response:: " << proxyResponse << std::endl;
         } else {
+            auto dnsEndpoint = boost::asio::ip::tcp::endpoint{boost::asio::ip::address::from_string(dnsip), dnsport};
             stream.next_layer().connect(dnsEndpoint);
         }
 
